@@ -13,7 +13,7 @@ pub struct TcpBuilder {}
 impl TcpBuilder {
     pub fn from_env() -> Result<TcpServer> {
         let ip_address =
-            std::env::var("SERVER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:17653".to_string());
+            std::env::var("SERVER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
         let ip_address = ip_address.parse::<SocketAddr>()?;
         Ok(TcpServer {
             ip_address,
@@ -162,7 +162,7 @@ impl TcpServer {
             .get(current_client.as_str())
             .ok_or_else(|| anyhow!("no client present in store"))?;
         println!(
-            "client connection dropped, \n position: {:?}\n last message\n{:?}",
+            "client connection dropped, \n position: {:?}\n last message: {:?}",
             curr_client.current_position, curr_client.last_message
         );
         Ok(())

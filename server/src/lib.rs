@@ -54,24 +54,24 @@ pub enum ServerMessage {
     ServerFailed(String),
 }
 
-type WrappedStream = FramedRead<OwnedReadHalf, LengthDelimitedCodec>;
-type WrappedSink = FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>;
-type SerStream = Framed<WrappedStream, ClientMessage, (), Json<ClientMessage, ()>>;
-type DeSink = Framed<WrappedSink, (), ServerMessage, Json<(), ServerMessage>>;
+type FramedStream = FramedRead<OwnedReadHalf, LengthDelimitedCodec>;
+type FramedSink = FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>;
+type ClientStream = Framed<FramedStream, ClientMessage, (), Json<ClientMessage, ()>>;
+type ServerSink = Framed<FramedSink, (), ServerMessage, Json<(), ServerMessage>>;
 
 // This is provides some reasonable ergonomics around working with tcp.
 // https://github.com/carllerche/tokio-serde/blob/master/examples/server.rs
-fn wrap_stream(stream: TcpStream) -> (SerStream, DeSink) {
-    // here we first split the stream into read and write this will allow us to work with them each seperately
+fn wrap_stream(stream: TcpStream) -> (ClientStream, ServerSink) {
+    // here we first split the stream into read and write this will allow us to work with them each separately
     let (read, write) = stream.into_split();
 
     // here were wrapping them is a framed and length delimited codec.
     // this let's us not have to worry about buffering and provides deserialization using serde
-    let stream = WrappedStream::new(read, LengthDelimitedCodec::new());
-    let sink = WrappedSink::new(write, LengthDelimitedCodec::new());
+    let stream = FramedStream::new(read, LengthDelimitedCodec::new());
+    let sink = FramedSink::new(write, LengthDelimitedCodec::new());
     (
-        SerStream::new(stream, Json::default()),
-        DeSink::new(sink, Json::default()),
+        ClientStream::new(stream, Json::default()),
+        ServerSink::new(sink, Json::default()),
     )
 }
 
