@@ -1,62 +1,53 @@
-use anyhow::Result;
-use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use server::TcpServer;
-use std::collections::HashMap;
-use std::env;
-use std::error::Error;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_serde::{formats::Json, Framed};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 pub mod server;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ClientFailed {
     server_command: String,
     current_position: Point,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ClientOnConnect {
-    client_name: String,
-    message: String,
-    current_position: Point,
+    pub client_name: String,
+    pub message: String,
+    pub current_position: Point,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ClientCommandResponse {
-    message: String,
-    current_position: Point,
+    pub message: String,
+    pub current_position: Point,
     // Here we could add an a set of error codes
 }
 
 // These are the messages the client will send to the server
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub enum ClientMessage {
     ClientOnConnect(ClientOnConnect),
     ClientCommandResponse(ClientCommandResponse),
     Failed(ClientFailed),
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ServerOnConnect {
-    client_name: String,
-    message: String,
+    pub client_name: String,
+    pub message: String,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ServerCommand {
-    success_message: String,
-    message_id: String,
+    pub success_message: String,
+    pub message_id: String,
 }
 
 // These are the messages the server will send to the client
-#[derive(Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub enum ServerMessage {
     OnConnect(ServerOnConnect),
     ServerMoveCommand(Point),
@@ -65,14 +56,17 @@ pub enum ServerMessage {
 
 type WrappedStream = FramedRead<OwnedReadHalf, LengthDelimitedCodec>;
 type WrappedSink = FramedWrite<OwnedWriteHalf, LengthDelimitedCodec>;
-
-// We use the unit type in place of the message types since we're
-// only dealing with one half of the IO
 type SerStream = Framed<WrappedStream, ClientMessage, (), Json<ClientMessage, ()>>;
 type DeSink = Framed<WrappedSink, (), ServerMessage, Json<(), ServerMessage>>;
 
+// This is provides some reasonable ergonomics around working with tcp.
+// https://github.com/carllerche/tokio-serde/blob/master/examples/server.rs
 fn wrap_stream(stream: TcpStream) -> (SerStream, DeSink) {
+    // here we first split the stream into read and write this will allow us to work with them each seperately
     let (read, write) = stream.into_split();
+
+    // here were wrapping them is a framed and length delimited codec.
+    // this let's us not have to worry about buffering and provides deserialization using serde
     let stream = WrappedStream::new(read, LengthDelimitedCodec::new());
     let sink = WrappedSink::new(write, LengthDelimitedCodec::new());
     (
@@ -81,7 +75,7 @@ fn wrap_stream(stream: TcpStream) -> (SerStream, DeSink) {
     )
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct Point {
     x: f64,
     y: f64,

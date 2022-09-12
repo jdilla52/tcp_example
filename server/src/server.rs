@@ -1,7 +1,6 @@
-use crate::{ClientMessage, ClientState, Point, ServerMessage};
+use crate::{ClientMessage, ClientState, Point, ServerMessage, ServerOnConnect};
 
-use crate::ClientMessage::ClientOnConnect;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -9,14 +8,12 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-pub struct TcpBuilder {
-    ip_address: SocketAddr,
-}
+pub struct TcpBuilder {}
 
 impl TcpBuilder {
     pub fn from_env() -> Result<TcpServer> {
         let ip_address =
-            std::env::var("SERVER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+            std::env::var("SERVER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:17653".to_string());
         let ip_address = ip_address.parse::<SocketAddr>()?;
         Ok(TcpServer {
             ip_address,
@@ -50,7 +47,12 @@ impl TcpServer {
             let (socket, _) = listener.accept().await?;
             // Delimit frames using a length header
             tokio::spawn(async move {
-                Self::handle_client(socket, client).await;
+                match Self::handle_client(socket, client).await {
+                    Ok(_) => {}
+                    Err(err) => {
+                        println!("error: {:?}", err)
+                    }
+                };
             });
         }
     }
@@ -61,7 +63,7 @@ impl TcpServer {
     /// We can use serde to fully type and parse messages
     /// Here we can also imply state-fullness in the server by storing the current state of clients
     ///
-    async fn handle_client(socket: TcpStream, clients_state: ClientStore) {
+    async fn handle_client(socket: TcpStream, clients_state: ClientStore) -> Result<()> {
         let (mut stream, mut sink) = crate::wrap_stream(socket);
 
         // this first example is about how to deal with an on connect message and storing some data into our global store.
@@ -69,7 +71,7 @@ impl TcpServer {
         // here we can register our new client storing it's state locally in this thread and globally in the store
         // this is where we would build the datastructure in the server to hold client side state
         // ie client a. moved to x.
-        let message: ClientMessage = stream
+        let message = stream
             .next()
             .await
             .expect("The connection message wasn't set")
@@ -77,25 +79,26 @@ impl TcpServer {
 
         // as the stream is monolithic these all need to be handled originating in one place:
         // Here we can parse the various types of messages the client might send us and respond.
-        match message {
-            ClientMessage::ClientOnConnect(client) => {
-                // update the local state so the client no longer needs to send an id:
-                current_client = client.client_name.clone();
-                // here we're updating the server state with the message from the client
-                let mut lock = clients_state.lock().await;
-                lock.insert(current_client.clone(), client.into());
-                // may as well explictly drop here. This allows other threads to interact with the store
-                drop(lock);
-            }
-            _ => {
-                // this is an error close the connection
-                return;
-            }
-        }
+        if let ClientMessage::ClientOnConnect(client) = message {
+            // update the local state so the client no longer needs to send an id:
+            current_client = client.client_name.clone();
+            // here we're updating the server state with the message from the client
+            let mut lock = clients_state.lock().await;
+            lock.insert(current_client.clone(), client.into());
+            // may as well explictly drop here. This allows other threads to interact with the store
+            drop(lock);
+
+            sink.send(ServerMessage::OnConnect(ServerOnConnect {
+                client_name: current_client.clone(),
+                message: "hello".to_string(),
+            }))
+            .await
+            .expect("Failed to send ping to server");
+        };
 
         // This example is about sending a set of commands and dealing with responses:
 
-        // After a successfull connection let's now try and move the client to some positions
+        // After a successfull connection let's now try to send some commands to the client
         // let's say we want to move all our clients to a couple of positions
         let movements = vec![
             Point {
@@ -129,26 +132,39 @@ impl TcpServer {
             let message: ClientMessage = stream
                 .next()
                 .await
-                .expect("Failed to receive move response")
-                .expect("Failed to parse response");
+                .ok_or_else(|| anyhow!("failed to retrieve next message"))?
+                .map_err(|_err| anyhow!("failed to parse next message"))?;
 
             match message {
                 ClientMessage::ClientOnConnect(_) => {
                     // This should be an error
-                    return;
+                    return Err(anyhow!("server sent wrong message"));
                 }
                 ClientMessage::ClientCommandResponse(client) => {
+                    // update our local state
                     let mut lock = clients_state.lock().await;
                     lock.insert(current_client.clone(), client.into());
                     drop(lock);
                 }
                 ClientMessage::Failed(client) => {
+                    // update our local state
                     let mut lock = clients_state.lock().await;
                     lock.insert(current_client.clone(), client.into());
                     drop(lock);
-                    println!("failed: {:?}", client);
+
+                    // here we could add retry logic when a client fails
+                    return Err(anyhow!("client failed"));
                 }
             }
         }
+        let lock = clients_state.lock().await;
+        let curr_client = lock
+            .get(current_client.as_str())
+            .ok_or_else(|| anyhow!("no client present in store"))?;
+        println!(
+            "client connection dropped, \n position: {:?}\n last message\n{:?}",
+            curr_client.current_position, curr_client.last_message
+        );
+        Ok(())
     }
 }
